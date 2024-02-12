@@ -1,0 +1,12 @@
+// custom_components/met_ocean_tide/manifest.json
+{
+  "domain": "met_ocean_tide",
+  "name": "MetOcean Tide",
+  "documentation": "https://github.com/tgpharding/home-assistant-tide-import/blob/main/README.md",
+  "dependencies": [],
+  "codeowners": ["@tgpharding"],
+  "requirements": ["requests"],
+  "version": "0.1",
+  "config_flow": false,
+  "custom": true
+}
