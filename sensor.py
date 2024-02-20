@@ -45,7 +45,7 @@ class MetOceanTideSensor(Entity):
         """Fetch tide information."""
         # Add logic to fetch tide information from MetOcean API
         # Replace the URL and API key with your actual values
-        url = "https://forecast-api.metoceanapi.com/tide-info?location=Raglan&api_key=PgUVxmAGuE52AntxpDwgPQ"
+        url = "https://forecast-api.metoceanapi.com/tide-info?location=Raglan&api_key=APIKEY"
         
         try:
             response = requests.get(url)
