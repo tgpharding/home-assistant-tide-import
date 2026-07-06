@@ -21,26 +21,34 @@
 #include <Arduino.h>
 
 static const int PIN_TX = 21; // expected CN1 Tx (ESP output toward AC)
-static const int PIN_RX = 20; // expected CN1 Rx (ESP input from AC)
+
+// every safe input candidate on the C3: 18/19 are native USB (never touch),
+// 21 is the driven output, 11-17 are SPI flash. 9 is the boot strap but
+// reading it is harmless.
+static const int CANDIDATES[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20};
+static const int N = sizeof(CANDIDATES) / sizeof(CANDIDATES[0]);
 
 static bool level = false;
 static uint32_t lastToggleMs = 0;
 static uint32_t lastReportMs = 0;
 
-// loopback tracking: does PIN_RX follow PIN_TX (either polarity)?
-static uint32_t samples = 0, matchSame = 0, matchOpposite = 0;
+static uint32_t samples = 0;
+static uint32_t matchSame[N] = {0}, matchOpposite[N] = {0};
 
 void setup() {
     Serial.begin(115200);
     delay(3000); // give USB CDC time to enumerate
 
     pinMode(PIN_TX, OUTPUT);
-    pinMode(PIN_RX, INPUT);
     digitalWrite(PIN_TX, LOW);
+    for (int i = 0; i < N; i++) {
+        pinMode(CANDIDATES[i], INPUT);
+    }
 
     Serial.println();
-    Serial.println("pintest: GPIO21 square wave 1s HIGH / 1s LOW; reading GPIO20");
-    Serial.println("pintest: meter CN1 Tx->G first, then jumper CN1 Rx<->Tx");
+    Serial.println("pintest v2: GPIO21 square wave 1s HIGH / 1s LOW;");
+    Serial.println("watching GPIOs 0-10 and 20 for any pin that follows it.");
+    Serial.println("Meter CN1 Tx->G first, then jumper CN1 Rx<->Tx.");
 }
 
 void loop() {
@@ -56,29 +64,38 @@ void loop() {
     static uint32_t lastSampleMs = 0;
     if (now - lastSampleMs >= 20 && now - lastToggleMs >= 20) {
         lastSampleMs = now;
-        bool rx = digitalRead(PIN_RX);
         samples++;
-        if (rx == level) matchSame++;
-        if (rx != level) matchOpposite++;
+        for (int i = 0; i < N; i++) {
+            bool v = digitalRead(CANDIDATES[i]);
+            if (v == level) matchSame[i]++;
+            else matchOpposite[i]++;
+        }
     }
 
     if (now - lastReportMs >= 2000 && samples > 0) {
         lastReportMs = now;
 
-        const char* verdict = "loopback INACTIVE (GPIO20 not following)";
-        if (matchSame > samples * 95 / 100) {
-            verdict = "loopback ACTIVE, same polarity (non-inverting path)";
-        } else if (matchOpposite > samples * 95 / 100) {
-            verdict = "loopback ACTIVE, OPPOSITE polarity (inverting path)";
+        char hits[128] = "";
+        for (int i = 0; i < N; i++) {
+            char part[32];
+            if (matchSame[i] > samples * 95 / 100) {
+                snprintf(part, sizeof(part), " GPIO%d(same)", CANDIDATES[i]);
+                strlcat(hits, part, sizeof(hits));
+            } else if (matchOpposite[i] > samples * 95 / 100) {
+                snprintf(part, sizeof(part), " GPIO%d(inverted)", CANDIDATES[i]);
+                strlcat(hits, part, sizeof(hits));
+            }
         }
 
         Serial.printf(
-            "GPIO21(TX) now %s | GPIO20(RX) now %s | last 2s: %s\n",
+            "GPIO21(TX) now %s | GPIO20 now %s | following GPIO21:%s\n",
             level ? "HIGH" : "LOW",
-            digitalRead(PIN_RX) ? "HIGH" : "LOW",
-            verdict
+            digitalRead(20) ? "HIGH" : "LOW",
+            hits[0] ? hits : " none"
         );
 
-        samples = matchSame = matchOpposite = 0;
+        samples = 0;
+        memset(matchSame, 0, sizeof(matchSame));
+        memset(matchOpposite, 0, sizeof(matchOpposite));
     }
 }
