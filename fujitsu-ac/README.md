@@ -71,10 +71,21 @@ for this protocol.
 cancelled by the same inversion in the RX path, so loopback passes either way.
 The decisive bench check is a multimeter: with the firmware running and the
 board *not* connected to the AC, **CN1 Tx should idle at ~0 V** (inverted-UART
-idle, matching the AC TX's measured 0 V idle). If CN1 Tx idles at ~5 V, the
-shifter inverts — fix by removing the `uart_set_line_inverse` call (or
-changing it to `UART_SIGNAL_INV_DISABLE`) in a locally patched copy of
-`Uart.cpp`, and disable the network updater's auto-update before deploying.
+idle, matching the AC TX's measured 0 V idle).
+
+If CN1 Tx idles at ~5 V instead, the shifter inverts. The contingency build is
+already prepared — flash it and re-measure (CN1 Tx should now idle ~0 V):
+
+```sh
+pio run -e esp32-c3-noinvert -t upload
+```
+
+It patches the env-local library copy (`patch_noinvert.py`) so the ESP outputs
+normal idle-high UART and the shifter supplies the inversion. **On this build,
+never press the "Update firmware" button in HA** — the built-in network update
+(which is click-triggered only, never automatic) would reinstall upstream's
+inverted-UART binary. ArduinoOTA via `pio run -e esp32-c3-noinvert -t upload
+--upload-port <dongle-ip>` remains the update path instead.
 
 ## Build & flash (on the Mac — not in a cloud session)
 
