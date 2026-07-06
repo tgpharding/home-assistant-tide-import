@@ -39,34 +39,62 @@ FujitsuAC::FujitsuAC fujitsuAC = FujitsuAC::FujitsuAC(
     RESET_BUTTON
 );
 
-void setup() {
-    fujitsuAC.setup();
+// The library installs its UART driver in a global constructor, before
+// Arduino/FreeRTOS init completes. Two bench-verified consequences on the C3:
+// the UART0 console reclaims GPIO20/21 (its default pins) during setup, and
+// received frames sit undelivered in the RX FIFO (a byte-perfect loopback
+// echo only surfaced when a line break forced a FIFO flush — the RX timeout
+// interrupt never fired). Reinstall the driver cleanly at the end of setup:
+// proper runtime context, explicit pins, inversion, and delivery thresholds
+// (2 idle symbol times or 20 buffered bytes, whichever comes first). The
+// library keeps working through the reinstalled driver — it only holds the
+// port number.
+static void reinitUart() {
+    uart_driver_delete(UART_PORT);
 
-    // GPIO20/21 are also the C3's default UART0 console pins. The library
-    // claims them for UART1 in its (global) constructor, but console fixups
-    // during setup — e.g. the low-CPU-speed feature's frequency change —
-    // steal them back, leaving CN1 Tx parked at the console's idle-high and
-    // the AC frames routed nowhere (verified on the bench: CN1 idled at 5V
-    // and loopback was dead until the console was moved off these pins).
-    // Build flags route the console to USB-CDC; this re-asserts UART1's
-    // claim after everything in setup() has run.
-    uart_set_pin(UART_PORT, TXD2, RXD2, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    const uart_config_t cfg = {
+        .baud_rate = 9600,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_APB,
+    };
+
+    esp_err_t eInstall = uart_driver_install(UART_PORT, 1024, 0, 0, NULL, 0);
+    esp_err_t eConfig = uart_param_config(UART_PORT, &cfg);
+    esp_err_t ePins = uart_set_pin(UART_PORT, TXD2, RXD2, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 #ifdef FUJITSU_NO_LINE_INVERSE
-    uart_set_line_inverse(UART_PORT, UART_SIGNAL_INV_DISABLE);
+    esp_err_t eInv = uart_set_line_inverse(UART_PORT, UART_SIGNAL_INV_DISABLE);
 #else
-    uart_set_line_inverse(UART_PORT, UART_SIGNAL_TXD_INV | UART_SIGNAL_RXD_INV);
+    esp_err_t eInv = uart_set_line_inverse(UART_PORT, UART_SIGNAL_TXD_INV | UART_SIGNAL_RXD_INV);
 #endif
+    esp_err_t eTout = uart_set_rx_timeout(UART_PORT, 2);
+    esp_err_t eThresh = uart_set_rx_full_threshold(UART_PORT, 20);
 
-    // Deliver received bytes promptly. With this build's driver defaults the
-    // RX timeout interrupt never fired: an 11-byte frame sat in the hardware
-    // FIFO (bench-verified — a byte-perfect Init1 loopback echo only surfaced
-    // when a line break forced a FIFO flush) because small frames never reach
-    // the FIFO-full threshold. Fire after 2 idle symbol times or 20 buffered
-    // bytes, whichever comes first.
-    uart_set_rx_timeout(UART_PORT, 2);
-    uart_set_rx_full_threshold(UART_PORT, 20);
+    Serial.printf(
+        "uart reinit: install=%d config=%d pins=%d inv=%d tout=%d thresh=%d (0=OK)\n",
+        eInstall, eConfig, ePins, eInv, eTout, eThresh
+    );
+}
+
+void setup() {
+    Serial.begin(115200); // native-USB console, diagnostics only
+    fujitsuAC.setup();
+    reinitUart();
 }
 
 void loop() {
     fujitsuAC.loop();
+
+    // bench diagnostic: how many received bytes the driver has delivered and
+    // the library hasn't consumed yet (should hover at 0 when healthy; bytes
+    // appearing here at all proves interrupt-driven RX delivery works)
+    static uint32_t lastDiagMs = 0;
+    if (millis() - lastDiagMs >= 2000) {
+        lastDiagMs = millis();
+        size_t buffered = 0;
+        uart_get_buffered_data_len(UART_PORT, &buffered);
+        Serial.printf("uart rx buffered: %u\n", (unsigned) buffered);
+    }
 }
