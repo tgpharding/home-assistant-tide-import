@@ -24,13 +24,10 @@
 
 #define RXD2 20
 #define TXD2 21
-// UART0, not UART1: bench-verified that UART1 on this chip/IDF-5.4 build
-// captures RX bytes into its FIFO (byte-perfect loopback echo recovered via
-// a break-forced flush) but never raises the RX timeout / FIFO-threshold
-// interrupts, even on a freshly reinstalled driver with explicit thresholds.
-// UART0 is the natural owner of GPIO20/21 on the C3 anyway (they're its
-// default pins), and the console lives on USB-CDC in this build.
-#define UART_PORT UART_NUM_0
+// UART1, matching upstream's C3 configuration. (On the IDF 5.4 platform
+// this failed identically on UART0 and UART1 — see the platform pin note in
+// platformio.ini — so the port number was never the variable that mattered.)
+#define UART_PORT UART_NUM_1
 
 #define LED_W -1
 #define LED_R -1
