@@ -20,6 +20,7 @@
   the GPIO10 LED is unverified — left off rather than risk an always-on LED.
 */
 #include <FujitsuAC.h>
+#include <driver/uart.h>
 
 #define RXD2 20
 #define TXD2 21
@@ -40,6 +41,21 @@ FujitsuAC::FujitsuAC fujitsuAC = FujitsuAC::FujitsuAC(
 
 void setup() {
     fujitsuAC.setup();
+
+    // GPIO20/21 are also the C3's default UART0 console pins. The library
+    // claims them for UART1 in its (global) constructor, but console fixups
+    // during setup — e.g. the low-CPU-speed feature's frequency change —
+    // steal them back, leaving CN1 Tx parked at the console's idle-high and
+    // the AC frames routed nowhere (verified on the bench: CN1 idled at 5V
+    // and loopback was dead until the console was moved off these pins).
+    // Build flags route the console to USB-CDC; this re-asserts UART1's
+    // claim after everything in setup() has run.
+    uart_set_pin(UART_PORT, TXD2, RXD2, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+#ifdef FUJITSU_NO_LINE_INVERSE
+    uart_set_line_inverse(UART_PORT, UART_SIGNAL_INV_DISABLE);
+#else
+    uart_set_line_inverse(UART_PORT, UART_SIGNAL_TXD_INV | UART_SIGNAL_RXD_INV);
+#endif
 }
 
 void loop() {
