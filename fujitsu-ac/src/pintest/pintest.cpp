@@ -54,7 +54,10 @@ void setup() {
 void loop() {
     uint32_t now = millis();
 
-    if (now - lastToggleMs >= 1000) {
+    // asymmetric wave: 3 s HIGH / 1 s LOW, so a multimeter alone can tell
+    // polarity through the shifter — the level CN1 Tx holds for the LONG
+    // stretch corresponds to GPIO21 HIGH
+    if (now - lastToggleMs >= (level ? 3000 : 1000)) {
         lastToggleMs = now;
         level = !level;
         digitalWrite(PIN_TX, level);
@@ -87,10 +90,18 @@ void loop() {
             }
         }
 
+        char states[160] = "";
+        for (int i = 0; i < N; i++) {
+            char part[16];
+            snprintf(part, sizeof(part), " %d:%c",
+                     CANDIDATES[i], digitalRead(CANDIDATES[i]) ? 'H' : 'L');
+            strlcat(states, part, sizeof(states));
+        }
+
         Serial.printf(
-            "GPIO21(TX) now %s | GPIO20 now %s | following GPIO21:%s\n",
+            "TX(21) now %s | pins:%s | following GPIO21:%s\n",
             level ? "HIGH" : "LOW",
-            digitalRead(20) ? "HIGH" : "LOW",
+            states,
             hits[0] ? hits : " none"
         );
 
