@@ -56,6 +56,15 @@ void setup() {
 #else
     uart_set_line_inverse(UART_PORT, UART_SIGNAL_TXD_INV | UART_SIGNAL_RXD_INV);
 #endif
+
+    // Deliver received bytes promptly. With this build's driver defaults the
+    // RX timeout interrupt never fired: an 11-byte frame sat in the hardware
+    // FIFO (bench-verified — a byte-perfect Init1 loopback echo only surfaced
+    // when a line break forced a FIFO flush) because small frames never reach
+    // the FIFO-full threshold. Fire after 2 idle symbol times or 20 buffered
+    // bytes, whichever comes first.
+    uart_set_rx_timeout(UART_PORT, 2);
+    uart_set_rx_full_threshold(UART_PORT, 20);
 }
 
 void loop() {
