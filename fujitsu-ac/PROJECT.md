@@ -18,30 +18,52 @@
 | Phase 2 uses serial logging over USB1 | The firmware has **no serial-console logging** — all status + raw TX/RX frames (hex) publish to MQTT `fujitsu/<id>/…`; bench work runs off `mosquitto_sub` |
 | — | **New risk found:** the firmware already inverts at the ESP pins, so CN1's level shifter must be non-inverting. Loopback cannot detect a double inversion (it cancels); the decisive check is CN1 Tx idle voltage (~0 V good, ~5 V bad). A ready-made contingency build (`esp32-c3-noinvert` env) patches the inversion out if needed |
 
-## Current state
+## Current state (Rev 3.1, post-bench — July 2026)
 
-- `fujitsu-ac/` in this repo: pinned PlatformIO project (pioarduino platform,
-  Arduino core 3.x, board `esp32-c3-devkitm-1`), FujitsuAC pinned to audited
-  commit `0f3c2d5` (v1.3.16), sketch config kept identical to upstream C3
-  defaults so the click-triggered network OTA never changes pin behaviour.
-- Not yet compiled (cloud session couldn't fetch the ESP32 toolchain —
-  egress-restricted; builds normally on the Mac).
-- Board still runs Nathan's ESPHome halcyon firmware; needs `erase_flash` +
-  fresh upload.
+Bench verification ran across multiple sessions and settled every hardware
+question. Proven working: CN1 = RX GPIO20 / TX GPIO21 (confirmed), level
+shifter non-inverting both directions at 5 V logic, TX drive verified at the
+connector, RX verified chip-side, and byte-perfect 9600-baud inverted-UART
+reception on a bare test build. Firmware fixes landed along the way: USB-CDC
+console flags (the C3's UART0 console otherwise claims GPIO20/21), runtime
+UART driver reinstall with explicit RX delivery thresholds, platform pinned
+to pioarduino 51.03.07.
 
-## Next actions (hardware, on the Mac — full detail in README.md)
+**Two blockers found, both must be resolved before the AC test:**
 
-1. `pio run` — first compile validation, then erase + `pio run -t upload`
-   (hold SW2/PRGM; board disconnected from the AC throughout).
-2. Configure via the `faircon-<id>` AP at 192.168.1.1 → WiFi + Mosquitto
-   (192.168.50.184:1883) credentials.
-3. Bench (USB power only): confirm `Init1 Send` / `No response for 200 ms` on
-   MQTT → CN1 loopback echoes Init1 on `debug/received` (proves GPIO20/21) →
-   multimeter: CN1 Tx idles ~0 V (proves shifter polarity; if ~5 V, flash
-   `pio run -e esp32-c3-noinvert -t upload` and re-measure).
-4. Live: disconnect USB, plug into the AC. Success = `Init1 Send` →
-   `Init2 Send` → `Running` → climate entity in HA. Then two-way control +
-   IR-remote state-sync checks.
+1. **U6 (LIN transceiver) shares GPIO20/21 with CN1 and is always active.**
+   It echoes all UART TX back into GPIO20 (LIN behaviour; its dominant-timeout
+   is why slow DC tests missed it) and its RXD output fights the CN1 receive
+   path — an external device driving CN1 Rx gets corrupted to junk. No spare
+   GPIO disables it (full sweep, `uarttest` env). Hardware fix required:
+   Nathan has been asked for the cleanest disconnect (likely a series R or a
+   pin lift on the 8-pin part by the LIN terminal, silk U55). Nathan's
+   "CN1 and LIN can only be used one-or-the-other until v3" was this,
+   literally.
+2. **The full FujitsuAC firmware stalls UART RX delivery** — received frames
+   sit in the hardware FIFO (only surfaced by a break-forced flush), while
+   the bare test build delivers instantly with identical UART config. Suspect
+   subsystem unknown; the `stagetest` env switches firmware subsystems on one
+   stage at a time (cpu clock / wifi / sleep / ntp / mdns+ota / mqtt) to name
+   it. Runnable on the bench now — the U6 echo is the test signal.
+
+Diagnostic envs in this project: `pintest` (GPIO square-wave pin mapping),
+`uarttest` (bare UART echo + GPIO sweep for U6 enable), `stagetest` (RX
+delivery hunt). Device MQTT id: `c8b4e7b2f180`, name StudyAC.
+
+## Next actions
+
+1. Tom → Nathan: U6 disconnect question (drafted in session). Optionally:
+   macro photo of U55 marking + back-of-board photo for independent part ID.
+2. Bench: run `stagetest` (~2.5 min), read which stage kills RX delivery;
+   firmware fix follows from that.
+3. After BOTH fixes: reflash `esp32-c3-devkitm-1` env, jumper-at-boot echo
+   test must show self-propelled `debug/received` + `Terminated Init1`, then
+   live AC test (`Init1 Send` → `Init2 Send` → `Running` → HA climate
+   entity).
+4. Decision point if U6 fix is unattractive: Benas's ready-made dongle
+   (proven on Oceania UTY-TFSXF3 units) and Nathan's board returns to spares.
+   All firmware/protocol work transfers.
 
 ## Standing safety gates (unchanged from Rev 2)
 
@@ -53,12 +75,10 @@
 
 ## Open items
 
-- CN1 = GPIO20/21: still an inference (~90%) — now doubly supported by
-  upstream choosing the same pins for C3, but confirm via the loopback test
-  before live connection.
-- Level-shifter polarity: unknown until the CN1 Tx idle-voltage check.
-- Protocol theory: unproven until the unit answers Init1. The multimeter
-  readings matching inverted-UART expectations is strong new corroboration.
+- U6 disconnect method — awaiting Nathan (or part ID from photos).
+- RX delivery culprit — awaiting `stagetest` run.
+- Protocol theory: still unproven until the unit answers Init1; all bench
+  evidence (inverted UART, idle levels, pinout) continues to corroborate it.
 
 ## Key references
 
