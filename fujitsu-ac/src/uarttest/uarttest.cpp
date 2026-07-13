@@ -19,6 +19,8 @@
 #include <Arduino.h>
 #include "driver/uart.h"
 #include "hal/uart_ll.h"
+#include "soc/gpio_reg.h"
+#include "soc/gpio_sig_map.h"
 
 #define UART_PORT UART_NUM_1
 #define PIN_TX 21
@@ -53,6 +55,22 @@ void setup() {
         "uarttest init: install=%d config=%d pins=%d inv=%d tout=%d thresh=%d (0=OK)\n",
         eInstall, eConfig, ePins, eInv, eTout, eThresh
     );
+
+    // GPIO matrix forensics: who drives each pad, and where U1RXD reads from.
+    // out_sel: 128 (0x80) = plain GPIO, 9 = U1TXD, 6 = U0TXD. oe bit = pad
+    // output enabled. in_sel bit7 set = input from GPIO matrix, low bits =
+    // source pad number.
+    uint32_t enable = REG_READ(GPIO_ENABLE_REG);
+    Serial.printf(
+        "matrix: pad20 out_sel=%u oe=%u | pad21 out_sel=%u oe=%u | U1RXD in_sel=0x%02x | U0RXD in_sel=0x%02x\n",
+        (unsigned) (REG_READ(GPIO_FUNC0_OUT_SEL_CFG_REG + 20 * 4) & 0xFF),
+        (unsigned) ((enable >> 20) & 1),
+        (unsigned) (REG_READ(GPIO_FUNC0_OUT_SEL_CFG_REG + 21 * 4) & 0xFF),
+        (unsigned) ((enable >> 21) & 1),
+        (unsigned) (REG_READ(GPIO_FUNC0_IN_SEL_CFG_REG + U1RXD_IN_IDX * 4) & 0xFF),
+        (unsigned) (REG_READ(GPIO_FUNC0_IN_SEL_CFG_REG + U0RXD_IN_IDX * 4) & 0xFF)
+    );
+
     Serial.println("sending Init1 frame every 1s; jumper CN1 Rx<->Tx");
 }
 
