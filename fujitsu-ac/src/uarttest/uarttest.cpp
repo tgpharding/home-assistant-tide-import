@@ -1,26 +1,25 @@
 /*
-  Bare-metal UART RX delivery diagnostic — no FujitsuAC library, no WiFi.
+  U6 (LIN transceiver) enable-pin hunt.
 
-  Configures UART1 exactly like the AC firmware (9600 8N1, inverted TX/RX,
-  CN1 pins GPIO20/21, explicit RX timeout + threshold), transmits the Init1
-  frame once per second, and reports over the native-USB console:
-    fifo  = bytes sitting in the hardware RX FIFO (undelivered)
-    ring  = bytes delivered to the software ring buffer, not yet read
-    intst = raw UART interrupt STATUS register
-    ena   = UART interrupt ENABLE register
-  plus a "received:" hex dump of anything that reaches software.
+  Established on this board: the LIN transceiver shares GPIO20/21 with CN1
+  and echoes all UART TX back onto GPIO20 (LIN transceivers do this by
+  design; its dominant-timeout is also why slow DC tests saw nothing). The
+  GPIO matrix registers proved the chip itself does not drive pad 20.
 
-  Bench use: flash, fit the CN1 Rx<->Tx jumper, watch `pio device monitor`.
-  Healthy: "received: 00 00 00 00 04 00 00 00 00 FF FB" once per second and
-  fifo staying 0. Broken: fifo climbing by 11 per second with no received
-  lines — and intst/ena then show exactly which events are asserting vs
-  enabled.
+  This build transmits the Init1 frame once per second (U6 obligingly echoes
+  it), then sweeps every spare GPIO — driving each LOW for 4 s, then HIGH
+  for 4 s — while counting echoed bytes per stage. If a stage's count drops
+  to zero, that GPIO+level put U6 to sleep: it's the enable/sleep pin, and
+  the AC firmware can hold it there forever.
+
+  Bench use: NO jumper on CN1. Flash, `pio device monitor`, let the sweep
+  finish (~2 min), paste the whole output.
+
+  Sweep pins: 0-10 (spare/LED/straps — safe to drive at runtime).
+  Excluded: 18/19 (native USB), 20/21 (the UART itself), 11-17 (SPI flash).
 */
 #include <Arduino.h>
 #include "driver/uart.h"
-#include "hal/uart_ll.h"
-#include "soc/gpio_reg.h"
-#include "soc/gpio_sig_map.h"
 
 #define UART_PORT UART_NUM_1
 #define PIN_TX 21
@@ -30,9 +29,35 @@ static const uint8_t FRAME[] = {
     0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFB
 };
 
+static const int SWEEP[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+static const int N_SWEEP = sizeof(SWEEP) / sizeof(SWEEP[0]);
+
+// stage -1 = baseline; then 2 stages per pin (LOW, HIGH); then done
+static int stage = -1;
+static uint32_t stageStartMs = 0;
+static uint32_t stageRxBytes = 0;
+static uint32_t baselineBytes = 0;
+static bool done = false;
+
+static void printStageResult() {
+    if (stage == -1) {
+        baselineBytes = stageRxBytes;
+        Serial.printf("baseline (nothing driven): %u echo bytes\n", (unsigned) stageRxBytes);
+        return;
+    }
+
+    int pin = SWEEP[stage / 2];
+    const char* level = (stage % 2 == 0) ? "LOW " : "HIGH";
+    const char* verdict = "";
+    if (baselineBytes > 0 && stageRxBytes == 0) {
+        verdict = "  <-- ECHO STOPPED: candidate U6 enable pin!";
+    }
+    Serial.printf("GPIO%-2d=%s: %u echo bytes%s\n", pin, level, (unsigned) stageRxBytes, verdict);
+}
+
 void setup() {
     Serial.begin(115200);
-    delay(3000); // let USB CDC enumerate
+    delay(3000);
 
     const uart_config_t cfg = {
         .baud_rate = 9600,
@@ -52,61 +77,61 @@ void setup() {
 
     Serial.println();
     Serial.printf(
-        "uarttest init: install=%d config=%d pins=%d inv=%d tout=%d thresh=%d (0=OK)\n",
+        "u6hunt init: install=%d config=%d pins=%d inv=%d tout=%d thresh=%d (0=OK)\n",
         eInstall, eConfig, ePins, eInv, eTout, eThresh
     );
+    Serial.println("u6hunt: 12s baseline, then each GPIO 0-10 driven LOW 4s / HIGH 4s.");
+    Serial.println("u6hunt: looking for the stage where echo bytes drop to zero. NO jumper on CN1.");
 
-    Serial.println("sending Init1 frame every 1s; jumper CN1 Rx<->Tx");
+    stageStartMs = millis();
 }
 
 void loop() {
-    static uint32_t lastSendMs = 0, lastDiagMs = 0, lastMatrixMs = 0;
     uint32_t now = millis();
 
-    // GPIO matrix forensics, reprinted so a late-attaching monitor sees it:
-    // who drives each pad, and where the UART receivers read from.
-    // out_sel: 128 (0x80) = plain GPIO, 9 = U1TXD, 6 = U0TXD. oe = pad output
-    // enabled. in_sel bit7 (0x80) set = routed via matrix from pad in low bits.
-    if (now - lastMatrixMs >= 10000) {
-        lastMatrixMs = now;
-        uint32_t enable = REG_READ(GPIO_ENABLE_REG);
-        Serial.printf(
-            "matrix: pad20 out_sel=%u oe=%u | pad21 out_sel=%u oe=%u | U1RXD in_sel=0x%02x | U0RXD in_sel=0x%02x\n",
-            (unsigned) (REG_READ(GPIO_FUNC0_OUT_SEL_CFG_REG + 20 * 4) & 0xFF),
-            (unsigned) ((enable >> 20) & 1),
-            (unsigned) (REG_READ(GPIO_FUNC0_OUT_SEL_CFG_REG + 21 * 4) & 0xFF),
-            (unsigned) ((enable >> 21) & 1),
-            (unsigned) (REG_READ(GPIO_FUNC0_IN_SEL_CFG_REG + U1RXD_IN_IDX * 4) & 0xFF),
-            (unsigned) (REG_READ(GPIO_FUNC0_IN_SEL_CFG_REG + U0RXD_IN_IDX * 4) & 0xFF)
-        );
-    }
-
+    // transmit once per second; U6 echoes it back
+    static uint32_t lastSendMs = 0;
     if (now - lastSendMs >= 1000) {
         lastSendMs = now;
         uart_write_bytes(UART_PORT, FRAME, sizeof(FRAME));
     }
 
-    if (now - lastDiagMs >= 1000) {
-        lastDiagMs = now;
-        uart_dev_t *hw = UART_LL_GET_HW(UART_PORT);
-        size_t ring = 0;
-        uart_get_buffered_data_len(UART_PORT, &ring);
-        Serial.printf(
-            "fifo=%u ring=%u intst=0x%08x ena=0x%08x\n",
-            (unsigned) uart_ll_get_rxfifo_len(hw),
-            (unsigned) ring,
-            (unsigned) uart_ll_get_intsts_mask(hw),
-            (unsigned) uart_ll_get_intr_ena_status(hw)
-        );
-    }
-
+    // count everything echoed back
     uint8_t buf[64];
     int n = uart_read_bytes(UART_PORT, buf, sizeof(buf), 0);
     if (n > 0) {
-        Serial.print("received:");
-        for (int i = 0; i < n; i++) {
-            Serial.printf(" %02X", buf[i]);
-        }
-        Serial.println();
+        stageRxBytes += n;
     }
+
+    if (done) {
+        return;
+    }
+
+    uint32_t stageLen = (stage == -1) ? 12000 : 4000;
+    if (now - stageStartMs < stageLen) {
+        return;
+    }
+
+    // stage finished: report, tidy up, advance
+    printStageResult();
+
+    if (stage >= 0 && stage % 2 == 1) {
+        pinMode(SWEEP[stage / 2], INPUT); // release previous pin after its HIGH stage
+    }
+
+    stage++;
+    stageRxBytes = 0;
+    stageStartMs = now;
+
+    if (stage >= N_SWEEP * 2) {
+        done = true;
+        Serial.println("u6hunt: sweep complete. If no candidate was flagged, U6 has no");
+        Serial.println("u6hunt: GPIO-controlled enable and needs a hardware approach.");
+        return;
+    }
+
+    int pin = SWEEP[stage / 2];
+    int level = (stage % 2 == 0) ? LOW : HIGH;
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, level);
 }
