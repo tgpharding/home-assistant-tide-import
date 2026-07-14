@@ -73,12 +73,44 @@ delivery hunt). Device MQTT id: `c8b4e7b2f180`, name StudyAC.
 2. **Ground-loop rule:** never connect USB1 and the AC simultaneously; AC pins
    are not galvanically isolated. Flash fully disconnected from the unit.
 
+## Live-test result (July 2026) — PROTOCOL CONFIRMED, unit needs decode support
+
+Plugged into the AC. **The ASTG34KMTC responded** — the first data ever
+received from this port. Handshake ran `Init1 → Init2 → Running`; the AC's
+Init replies matched the expected frames, so the link is fully bidirectional
+and the protocol theory (unproven since the first multimeter reading) is
+**confirmed**.
+
+Remaining blocker is now purely firmware: the first frame after `Running`,
+`00 01 01 14 00 01 01`, fails the TFSXW1 checksum (deterministic across every
+reboot) and the controller stalls without retrying. No config fix exists —
+`UTY-TFSXW1` is the only implemented protocol (`TFSXJ4` is a commented-out
+stub). This unit's frame format isn't recognized by the one controller.
+
+**This is a FujitsuAC protocol-support task for Benas**, not a hardware or
+integration problem — and it is hardware-agnostic (Benas's own ready-made
+dongle runs the same firmware and would hit the same wall on this unit, so
+buying one is no longer a fallback). See `BENAS-REPORT.md`. All hardware and
+firmware-plumbing work is done and verified.
+
+## Bench/hardware status: COMPLETE
+
+Everything below is proven working: CN1 = RX GPIO20 / TX GPIO21, non-inverting
+level shifter, TX + RX end-to-end at 9600 8N1 inverted, byte-perfect loopback.
+Firmware fixes shipped: USB-CDC console (frees GPIO20/21 from the C3 console),
+runtime UART driver reinstall + RX thresholds, platform pinned to pioarduino
+51.03.07. **R54/R55 removed** on the board to isolate the always-on LIN
+transceiver (U55/U6) that shares the UART pins — this was the single fix that
+made external RX work (Nathan confirmed R54/R55; it was the "CN1 or LIN, not
+both" limitation, literally).
+
 ## Open items
 
-- U6 disconnect method — awaiting Nathan (or part ID from photos).
-- RX delivery culprit — awaiting `stagetest` run.
-- Protocol theory: still unproven until the unit answers Init1; all bench
-  evidence (inverted UART, idle levels, pinout) continues to corroborate it.
+- **Benas:** decode support for the ASTG34KMTC frame format (send
+  `BENAS-REPORT.md` + log to the community thread / email). Offer the raw
+  unframed byte dump if he wants the full frame.
+- If/when Benas ships support: network-update the dongle (or reflash) and
+  resume from the live test — climate entity, two-way control, IR sync.
 
 ## Key references
 
